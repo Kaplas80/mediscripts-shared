@@ -83,9 +83,22 @@ DEFAULT_PERMANENT_BLACKLIST_DIR="$HOME/"
 #PERMANENT_BLACKLIST_FILE=""
 DEFAULT_PERMANENT_BLACKLIST_FILE="blacklisted_google_ips"
 
+# uncomment to indicate the application to test a fix list of ips ADDITIONALY to the ones 
+# found by the query to the dns server
+#USE_CUSTOM_LIST="true"
+
+#CUSTOM_LIST_DIR=""
+DEFAULT_CUSTOM_LIST_DIR="$HOME/"
+#CUSTOM_LIST_FILE=""
+DEFAULT_CUSTOM_LIST_FILE="custom_google_ips"
+
 # uncomment to set a custom API address.
 #CUSTOM_API=""
 DEFAULT_API="www.googleapis.com"
+
+# uncomment to set a custom timeout.
+#CUSTOM_TIMEOUT=""
+DEFAULT_TIMEOUT="30s"
 
 # full path to hosts file.
 HOSTS_FILE="/etc/hosts"
@@ -95,6 +108,8 @@ TEST_FILE="${REMOTE:-$DEFAULT_REMOTE}:${REMOTE_TEST_DIR:-$DEFAULT_REMOTE_TEST_DI
 API="${CUSTOM_API:-$DEFAULT_API}"
 LOCAL_TMP="${LOCAL_TMP_ROOT:-$DEFAULT_LOCAL_TMP_ROOT}${TMP_DIR:-$DEFAULT_LOCAL_TMP_DIR}"
 PERMANENT_BLACKLIST="${PERMANENT_BLACKLIST_DIR:-$DEFAULT_PERMANENT_BLACKLIST_DIR}${PERMANENT_BLACKLIST_FILE:-$DEFAULT_PERMANENT_BLACKLIST_FILE}"
+CUSTOM_LIST="${CUSTOM_LIST_DIR:-$DEFAULT_CUSTOM_LIST_DIR}${CUSTOM_LIST_FILE:-$DEFAULT_CUSTOM_LIST_FILE}"
+TIMEOUT="${CUSTOM_TIMEOUT:-$DEFAULT_TIMEOUT}"
 
 
 # takes a status ($1) as arg. used to indicate whether to restore hosts file from backup or not.
@@ -194,6 +209,25 @@ blacklisted_ips () {
   mv "$API_IPS_PROGRESS" "$API_IPS"
 }
 
+# add IPs from a custom list
+custom_ips () {
+  API_IPS_PROGRESS="$LOCAL_TMP"'api-ips-progress'
+  mv "$API_IPS_FRESH" "$API_IPS_PROGRESS"
+  if [ -f "$CUSTOM_LIST" ]; then
+    msg "Found custom ip list. Parsing it." 'INFO'
+    while IFS= read -r line; do
+      if validate_ipv4 "$line"; then
+        # grep with inverted match to remove if already exists
+        grep -v "$line" "$API_IPS_PROGRESS" > "$API_IPS" 2>/dev/null
+        mv "$API_IPS" "$API_IPS_PROGRESS"
+        # add line to the end
+        echo "$line" >> "$API_IPS_PROGRESS"
+      fi
+    done < "$CUSTOM_LIST"
+  fi
+  mv "$API_IPS_PROGRESS" "$API_IPS_FRESH"
+}
+
 # ip checker that tests Google endpoints for download speed.
 # takes an IP addr ($1) and its name ($2) as args.
 ip_checker () {
@@ -208,9 +242,9 @@ ip_checker () {
   # rclone download command
   if check_command "rclone"; then
     if [ -n "$CONFIG" ]; then
-      rclone copy --config "$CONFIG" --log-file "$RCLONE_LOG" -v "${TEST_FILE}" "$LOCAL_TMP_TESTFILE_DIR"
+      timeout "$TIMEOUT" rclone copy --config "$CONFIG" --log-file "$RCLONE_LOG" -v "${TEST_FILE}" "$LOCAL_TMP_TESTFILE_DIR"
     else
-      rclone copy --log-file "$RCLONE_LOG" -v "${TEST_FILE}" "$LOCAL_TMP_TESTFILE_DIR"
+      timeout "$TIMEOUT" rclone copy --log-file "$RCLONE_LOG" -v "${TEST_FILE}" "$LOCAL_TMP_TESTFILE_DIR"
     fi
   else
     msg "Rclone is not installed or is not reachable in this user's \$PATH." 'ERROR'
@@ -324,13 +358,23 @@ if ! hosts_backup; then end "Unable to backup the hosts file. Check its path and
 # TODO: (cgomesu) add function to allocate a dummy file in the remote
 
 # start running test
+if ! check_command "timeout"; then
+  msg "The command 'timeout' is not installed or not reachable in this user's \$PATH." 'ERROR'
+  end "Install timeout or make sure its executable is reachable, then try again." 1
+fi
+
 if check_command "dig"; then
   # redirect dig output to tmp file to be parsed later
   API_IPS_FRESH="$LOCAL_TMP"'api-ips-fresh'
-  dig +answer "$API" +short 1> "$API_IPS_FRESH" 2>/dev/null
+  dig "$1" +answer "$API" +short 1> "$API_IPS_FRESH" 2>/dev/null
 else
   msg "The command 'dig' is not installed or not reachable in this user's \$PATH." 'ERROR'
   end "Install dig or make sure its executable is reachable, then try again." 1
+fi
+
+if [ "$USE_CUSTOM_LIST" = 'true' ]; then
+  # add custom ips to the list
+  custom_ips
 fi
 
 if [ "$USE_PERMANENT_BLACKLIST" = 'true' ]; then
